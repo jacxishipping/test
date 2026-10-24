@@ -1,0 +1,32 @@
+services:
+  control-api:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile.server
+    ports:
+      - "8000:8000"
+    environment:
+      - AI_BRIDGE_SECRET_KEY=dev_secret_key_change_in_production
+      - AI_BRIDGE_WORKSPACE=/data/workspace
+    volumes:
+      - ai-bridge-data:/data
+    restart: unless-stopped
+
+  linux-agent:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile.linux-agent
+    environment:
+      - AI_BRIDGE_SERVER_URL=http://control-api:8000
+      - AI_BRIDGE_WORKSPACE=/data/workspace
+      - AI_BRIDGE_DEVICE_ID=dev-docker-linux-01
+      - AI_BRIDGE_AUTH_TOKEN=tok-docker-dev
+    depends_on:
+      - control-api
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ai-bridge-data:/data
+    restart: unless-stopped
+
+volumes:
+  ai-bridge-data:

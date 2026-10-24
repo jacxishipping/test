@@ -1,0 +1,6 @@
+{
+  "name": "AI Bridge — Universal AI-to-Computer Control Platform",
+  "description": "Security-first universal platform connecting AI assistants and coding agents to authorized Linux servers and Windows workstations via Model Context Protocol (MCP).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,31 @@
+[Unit]
+Description=AI Bridge Linux Device Agent
+After=network.target network-online.target
+Wants=network-online.target
+Documentation=https://github.com/example/ai-bridge
+
+[Service]
+Type=simple
+User=aibridge
+Group=aibridge
+WorkingDirectory=/opt/ai-bridge
+EnvironmentFile=/etc/ai-bridge/agent.env
+ExecStart=/opt/ai-bridge/venv/bin/python3 -m agents.linux.linux_agent --server ${AI_BRIDGE_SERVER_URL} --workspace ${AI_BRIDGE_WORKSPACE} --device-id ${AI_BRIDGE_DEVICE_ID} --token ${AI_BRIDGE_AUTH_TOKEN}
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+# Hardening & Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/ai-bridge/workspace /var/log/ai-bridge
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

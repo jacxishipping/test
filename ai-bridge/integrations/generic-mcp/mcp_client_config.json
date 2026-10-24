@@ -1,0 +1,13 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/client-config.json",
+  "mcpServers": {
+    "ai-bridge": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "services.mcp_server.server", "--transport", "stdio"],
+      "env": {
+        "AI_BRIDGE_WORKSPACE": "~/ai-bridge-workspace"
+      }
+    }
+  }
+}

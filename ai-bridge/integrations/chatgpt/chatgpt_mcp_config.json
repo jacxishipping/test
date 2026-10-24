@@ -1,0 +1,8 @@
+{
+  "name": "ai-bridge",
+  "url": "https://control.example.com/api/mcp/sse",
+  "authentication": {
+    "type": "bearer",
+    "token": "USER_AI_BRIDGE_TOKEN"
+  }
+}

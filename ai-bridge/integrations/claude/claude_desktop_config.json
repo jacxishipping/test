@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ai-bridge": {
+      "command": "python",
+      "args": [
+        "-m",
+        "services.mcp_server.server",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "AI_BRIDGE_WORKSPACE": "~/ai-bridge-workspace"
+      }
+    }
+  }
+}
