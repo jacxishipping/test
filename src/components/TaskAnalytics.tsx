@@ -131,6 +131,23 @@ export default function TaskAnalytics({ tasks, devices }: TaskAnalyticsProps) {
     });
   }, [devices, tasks, selectedRiskFilter]);
 
+  // If no tasks exist at all in real mode, render clean zero-state
+  if (tasks.length === 0) {
+    return (
+      <div className="bg-[#0F172A] border border-slate-800 rounded-lg p-8 text-center flex flex-col items-center justify-center gap-3">
+        <div className="w-10 h-10 rounded-lg bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+          <PieIcon className="w-5 h-5" />
+        </div>
+        <div>
+          <h3 className="text-sm font-bold text-white mb-1">No Task Executions Recorded Yet</h3>
+          <p className="text-xs text-slate-400 max-w-md mx-auto">
+            Ready for real testing. Run a tool in the <span className="text-slate-200 font-semibold">Tool Sandbox</span> or invoke an action through your MCP assistant to see real success vs. failure telemetry here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // Custom Recharts Tooltip
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {

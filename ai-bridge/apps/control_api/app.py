@@ -32,60 +32,9 @@ ENROLLMENT_TOKENS: Dict[str, Dict[str, Any]] = {
     "bootstrap-token-alpha": {"created_at": int(time.time()), "max_uses": 5, "uses": 0}
 }
 DEVICE_TOKENS: Dict[str, str] = {}  # device_id -> auth_token
+# Registered fleet devices (starts completely empty for production / real testing)
 REGISTERED_DEVICES: Dict[str, Device] = {}
-
-# Seed initial demonstration devices
-_dev1 = Device(
-    id="dev-prod-linux-01",
-    hostname="srv-prod-api-01.internal",
-    os=DeviceOS.LINUX,
-    os_version="Ubuntu 24.04 LTS (Kernel 6.8.0-generic)",
-    status=DeviceStatus.ONLINE,
-    ip_address="10.0.4.12",
-    agent_version="1.0.0",
-    last_seen_epoch=int(time.time()),
-    workspace_root="/opt/ai-bridge/workspace",
-    tags=["production", "api", "linux"],
-    enrolled_at=int(time.time()) - 86400 * 14,
-    desktop_enabled=False,
-    telemetry=DeviceTelemetry(
-        cpu_percent=14.2,
-        memory_used_mb=4210.0,
-        memory_total_mb=16384.0,
-        disk_used_gb=42.1,
-        disk_total_gb=200.0,
-        uptime_seconds=1284000,
-        load_avg=[0.42, 0.38, 0.25],
-    ),
-)
-REGISTERED_DEVICES[_dev1.id] = _dev1
-DEVICE_TOKENS[_dev1.id] = "tok-dev-prod-linux-01-secret"
-
-_dev2 = Device(
-    id="dev-stage-win-02",
-    hostname="win-qa-workstation-02",
-    os=DeviceOS.WINDOWS,
-    os_version="Windows 11 Pro 23H2 (Build 22631)",
-    status=DeviceStatus.ONLINE,
-    ip_address="10.0.8.44",
-    agent_version="1.0.0",
-    last_seen_epoch=int(time.time()),
-    workspace_root="C:\\Workspace\\ai-bridge",
-    tags=["staging", "windows", "desktop-automation"],
-    enrolled_at=int(time.time()) - 86400 * 5,
-    desktop_enabled=True,
-    telemetry=DeviceTelemetry(
-        cpu_percent=22.8,
-        memory_used_mb=7820.0,
-        memory_total_mb=32768.0,
-        disk_used_gb=180.5,
-        disk_total_gb=512.0,
-        uptime_seconds=348200,
-        load_avg=[0.22, 0.18, 0.15],
-    ),
-)
-REGISTERED_DEVICES[_dev2.id] = _dev2
-DEVICE_TOKENS[_dev2.id] = "tok-dev-stage-win-02-secret"
+DEVICE_TOKENS: Dict[str, str] = {}
 
 
 # --- Request/Response Models ---

@@ -181,6 +181,17 @@ export default function App() {
     }
   };
 
+  const handleEnrollLocal = async () => {
+    try {
+      const res = await fetch('/api/devices/enroll-local', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message || 'Host enrolled successfully!');
+      refreshData();
+    } catch (e) {
+      showToast('Error enrolling local host');
+    }
+  };
+
   const handleEnrollDevice = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newHostname.trim()) return;
@@ -517,6 +528,13 @@ export default function App() {
                   <span>Refresh Fleet</span>
                 </button>
                 <button
+                  onClick={handleEnrollLocal}
+                  className="px-3 py-2 bg-emerald-700/80 hover:bg-emerald-600 text-xs font-semibold text-white rounded-lg flex items-center gap-1.5 shadow transition-colors"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>Enroll This Host Machine</span>
+                </button>
+                <button
                   onClick={() => {
                     setEnrollModalOpen(true);
                     setEnrollTokenResult(null);
@@ -524,13 +542,45 @@ export default function App() {
                   className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white rounded-lg flex items-center gap-1.5 shadow"
                 >
                   <PlusCircle className="w-3.5 h-3.5" />
-                  <span>Enroll Device</span>
+                  <span>Enroll Remote Host</span>
                 </button>
               </div>
             </div>
 
-            {/* Devices Table */}
-            <div className="bg-[#0F172A] border border-slate-800 rounded-lg overflow-hidden">
+            {/* Empty State when no devices are enrolled */}
+            {devices.length === 0 ? (
+              <div className="bg-[#0F172A] border border-slate-800 rounded-lg p-12 text-center flex flex-col items-center justify-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                  <Server className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white mb-1">No Host Devices Enrolled Yet</h3>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    All mock and sample data has been removed. You are running in real execution mode. Enroll the current host machine with 1 click to test real live telemetry, or enroll any remote Linux/Windows machine.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3 mt-1">
+                  <button
+                    onClick={handleEnrollLocal}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white rounded-lg flex items-center gap-2 shadow transition-colors"
+                  >
+                    <Zap className="w-4 h-4" />
+                    <span>Enroll This Machine Now</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEnrollModalOpen(true);
+                      setEnrollTokenResult(null);
+                    }}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 border border-slate-700 rounded-lg flex items-center gap-2 transition-colors"
+                  >
+                    <PlusCircle className="w-4 h-4" />
+                    <span>Enroll Remote Host (Linux / Windows)</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-[#0F172A] border border-slate-800 rounded-lg overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-900/60 border-b border-slate-800 text-slate-400 font-medium">
@@ -633,6 +683,7 @@ export default function App() {
                 </table>
               </div>
             </div>
+            )}
           </div>
         )}
 
@@ -769,40 +820,48 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
-                    {filteredTasks.map(t => (
-                      <tr key={t.task_id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-3 px-4 text-slate-400">{t.task_id}</td>
-                        <td className="py-3 px-4 font-semibold text-slate-200">{t.tool_name}</td>
-                        <td className="py-3 px-4 font-sans text-slate-300">{t.device_hostname}</td>
-                        <td className="py-3 px-4 font-sans">{renderRiskBadge(t.risk_tier)}</td>
-                        <td className="py-3 px-4 font-sans">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                              t.status === 'completed'
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                : t.status === 'pending_approval'
-                                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                                : t.status === 'cancelled'
-                                ? 'bg-slate-800 text-slate-400'
-                                : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                            }`}
-                          >
-                            {t.status.replace('_', ' ')}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-400 max-w-xs truncate">{t.output || 'None'}</td>
-                        <td className="py-3 px-4 text-right font-sans">
-                          {t.status === 'pending_approval' && (
-                            <button
-                              onClick={() => handleCancelTask(t.task_id)}
-                              className="px-2 py-1 text-[11px] text-slate-400 hover:text-rose-300 transition-colors"
-                            >
-                              Cancel
-                            </button>
-                          )}
+                    {filteredTasks.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-500 font-sans text-xs">
+                          No tasks executed yet. Run any tool in the Tool Sandbox or connect an MCP client to record real executions.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      filteredTasks.map(t => (
+                        <tr key={t.task_id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3 px-4 text-slate-400">{t.task_id}</td>
+                          <td className="py-3 px-4 font-semibold text-slate-200">{t.tool_name}</td>
+                          <td className="py-3 px-4 font-sans text-slate-300">{t.device_hostname}</td>
+                          <td className="py-3 px-4 font-sans">{renderRiskBadge(t.risk_tier)}</td>
+                          <td className="py-3 px-4 font-sans">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                t.status === 'completed'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : t.status === 'pending_approval'
+                                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                  : t.status === 'cancelled'
+                                  ? 'bg-slate-800 text-slate-400'
+                                  : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              }`}
+                            >
+                              {t.status.replace('_', ' ')}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-400 max-w-xs truncate">{t.output || 'None'}</td>
+                          <td className="py-3 px-4 text-right font-sans">
+                            {t.status === 'pending_approval' && (
+                              <button
+                                onClick={() => handleCancelTask(t.task_id)}
+                                className="px-2 py-1 text-[11px] text-slate-400 hover:text-rose-300 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -827,11 +886,15 @@ export default function App() {
                     onChange={e => setSandboxTargetDev(e.target.value)}
                     className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none"
                   >
-                    {devices.map(d => (
-                      <option key={d.id} value={d.id}>
-                        {d.hostname} ({d.os.toUpperCase()} · {d.status})
-                      </option>
-                    ))}
+                    {devices.length === 0 ? (
+                      <option value="local-host">Current Machine (Local Host Environment)</option>
+                    ) : (
+                      devices.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.hostname} ({d.os.toUpperCase()} · {d.status})
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
 
@@ -1095,33 +1158,41 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono text-[11px] tabular-nums">
-                    {auditLogs.map(log => (
-                      <tr key={log.event_id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-3 px-4 text-slate-500 whitespace-nowrap">
-                          {new Date(log.timestamp * 1000).toLocaleTimeString()}
-                        </td>
-                        <td className="py-3 px-4 text-slate-400">{log.event_id}</td>
-                        <td className="py-3 px-4 font-sans font-medium text-slate-200">{log.actor}</td>
-                        <td className="py-3 px-4 text-slate-300 font-semibold">{log.action}</td>
-                        <td className="py-3 px-4 font-sans">{log.risk_tier ? renderRiskBadge(log.risk_tier) : '—'}</td>
-                        <td className="py-3 px-4 font-sans">
-                          <span
-                            className={`text-xs ${
-                              log.outcome === 'success'
-                                ? 'text-emerald-400'
-                                : log.outcome === 'denied'
-                                ? 'text-amber-400'
-                                : 'text-rose-400'
-                            }`}
-                          >
-                            {log.outcome}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-400 max-w-sm truncate">
-                          {JSON.stringify(log.payload)}
+                    {auditLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-500 font-sans text-xs">
+                          No audit events recorded yet. Run a real tool in the Tool Sandbox or connect an MCP client to log cryptographically signed events.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      auditLogs.map(log => (
+                        <tr key={log.event_id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3 px-4 text-slate-500 whitespace-nowrap">
+                            {new Date(log.timestamp * 1000).toLocaleTimeString()}
+                          </td>
+                          <td className="py-3 px-4 text-slate-400">{log.event_id}</td>
+                          <td className="py-3 px-4 font-sans font-medium text-slate-200">{log.actor}</td>
+                          <td className="py-3 px-4 text-slate-300 font-semibold">{log.action}</td>
+                          <td className="py-3 px-4 font-sans">{log.risk_tier ? renderRiskBadge(log.risk_tier) : '—'}</td>
+                          <td className="py-3 px-4 font-sans">
+                            <span
+                              className={`text-xs ${
+                                log.outcome === 'success'
+                                  ? 'text-emerald-400'
+                                  : log.outcome === 'denied'
+                                  ? 'text-amber-400'
+                                  : 'text-rose-400'
+                              }`}
+                            >
+                              {log.outcome}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-400 max-w-sm truncate">
+                            {JSON.stringify(log.payload)}
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>

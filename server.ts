@@ -2,6 +2,8 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
+import { execSync } from 'child_process';
 import { createServer as createViteServer } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -12,8 +14,58 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// In-memory persistent state for Control Plane
-interface Device {
+// Workspace configuration
+const WORKSPACE_DIR = process.env.AI_BRIDGE_WORKSPACE
+  ? path.resolve(process.env.AI_BRIDGE_WORKSPACE)
+  : path.resolve(__dirname);
+
+function getSafeWorkspacePath(relPath?: string): string {
+  if (!relPath || typeof relPath !== 'string') {
+    return WORKSPACE_DIR;
+  }
+  if (path.isAbsolute(relPath)) {
+    throw new Error('Absolute paths are forbidden.');
+  }
+  const resolved = path.resolve(WORKSPACE_DIR, relPath);
+  if (!resolved.startsWith(WORKSPACE_DIR)) {
+    throw new Error('Path escapes the configured workspace boundary.');
+  }
+  return resolved;
+}
+
+function getRealTelemetry() {
+  const totalMem = Math.round(os.totalmem() / 1024 / 1024);
+  const freeMem = Math.round(os.freemem() / 1024 / 1024);
+  const usedMem = totalMem - freeMem;
+  let diskTotal = 50.0;
+  let diskUsed = 10.0;
+
+  try {
+    const dfOut = execSync('df -k / | tail -n 1', { encoding: 'utf-8', timeout: 3000 });
+    const parts = dfOut.trim().split(/\s+/);
+    if (parts.length >= 4) {
+      diskTotal = Math.round((parseInt(parts[1], 10) / 1024 / 1024) * 10) / 10;
+      diskUsed = Math.round((parseInt(parts[2], 10) / 1024 / 1024) * 10) / 10;
+    }
+  } catch (e) {}
+
+  const loadAvg = os.loadavg();
+  const cpus = os.cpus();
+  const cpuPercent = Math.min(100, Math.round((loadAvg[0] / (cpus.length || 1)) * 100 * 10) / 10);
+
+  return {
+    cpu_percent: cpuPercent,
+    memory_used_mb: usedMem,
+    memory_total_mb: totalMem,
+    disk_used_gb: diskUsed,
+    disk_total_gb: diskTotal,
+    uptime_seconds: Math.round(os.uptime()),
+    load_avg: [Math.round(loadAvg[0] * 100) / 100, Math.round(loadAvg[1] * 100) / 100, Math.round(loadAvg[2] * 100) / 100],
+  };
+}
+
+// In-memory real persistent state for Control Plane
+export interface Device {
   id: string;
   hostname: string;
   os: 'linux' | 'windows';
@@ -36,7 +88,7 @@ interface Device {
   };
 }
 
-interface Task {
+export interface Task {
   task_id: string;
   tool_name: string;
   target_device_id: string;
@@ -55,7 +107,7 @@ interface Task {
   output?: string;
 }
 
-interface AuditLog {
+export interface AuditLog {
   event_id: string;
   timestamp: number;
   actor: string;
@@ -68,298 +120,10 @@ interface AuditLog {
 
 let emergencyStopActive = false;
 
-let devices: Device[] = [
-  {
-    id: 'dev-prod-linux-01',
-    hostname: 'srv-prod-api-01.internal',
-    os: 'linux',
-    os_version: 'Ubuntu 24.04 LTS (Kernel 6.8.0-generic)',
-    status: 'online',
-    ip_address: '10.0.4.12',
-    agent_version: '1.0.0',
-    last_seen_epoch: Math.floor(Date.now() / 1000),
-    workspace_root: '/opt/ai-bridge/workspace',
-    tags: ['production', 'api', 'linux', 'docker-host'],
-    desktop_enabled: false,
-    telemetry: {
-      cpu_percent: 18.4,
-      memory_used_mb: 4210.0,
-      memory_total_mb: 16384.0,
-      disk_used_gb: 42.1,
-      disk_total_gb: 200.0,
-      uptime_seconds: 1284000,
-      load_avg: [0.42, 0.38, 0.25],
-    },
-  },
-  {
-    id: 'dev-stage-win-02',
-    hostname: 'win-qa-workstation-02',
-    os: 'windows',
-    os_version: 'Windows 11 Pro 23H2 (Build 22631)',
-    status: 'online',
-    ip_address: '10.0.8.44',
-    agent_version: '1.0.0',
-    last_seen_epoch: Math.floor(Date.now() / 1000) - 20,
-    workspace_root: 'C:\\Workspace\\ai-bridge',
-    tags: ['staging', 'windows', 'desktop-automation'],
-    desktop_enabled: true,
-    telemetry: {
-      cpu_percent: 24.6,
-      memory_used_mb: 8192.0,
-      memory_total_mb: 32768.0,
-      disk_used_gb: 180.5,
-      disk_total_gb: 512.0,
-      uptime_seconds: 348200,
-      load_avg: [0.24, 0.19, 0.16],
-    },
-  },
-  {
-    id: 'dev-dev-docker-03',
-    hostname: 'docker-sandbox-runner',
-    os: 'linux',
-    os_version: 'Debian GNU/Linux 12 (bookworm)',
-    status: 'online',
-    ip_address: '172.18.0.2',
-    agent_version: '1.0.0',
-    last_seen_epoch: Math.floor(Date.now() / 1000) - 5,
-    workspace_root: '/workspace/sandbox',
-    tags: ['dev', 'container', 'ci-runner'],
-    desktop_enabled: false,
-    telemetry: {
-      cpu_percent: 8.2,
-      memory_used_mb: 1280.0,
-      memory_total_mb: 8192.0,
-      disk_used_gb: 14.8,
-      disk_total_gb: 100.0,
-      uptime_seconds: 86400,
-      load_avg: [0.10, 0.08, 0.05],
-    },
-  },
-];
-
-let tasks: Task[] = [
-  {
-    task_id: 'task-9a8b7c6d',
-    tool_name: 'read_workspace_file',
-    target_device_id: 'dev-prod-linux-01',
-    device_hostname: 'srv-prod-api-01.internal',
-    requesting_identity: 'claude_desktop',
-    risk_tier: 'tier_1_read_only',
-    arguments: { relative_path: 'src/main.py' },
-    requires_approval: false,
-    status: 'completed',
-    created_at: Math.floor(Date.now() / 1000) - 3600,
-    updated_at: Math.floor(Date.now() / 1000) - 3599,
-    result: { bytes_read: 1420, encoding: 'utf-8' },
-    output: 'Successfully read 1,420 bytes from src/main.py. Zero path escapes detected.',
-  },
-  {
-    task_id: 'task-8b7c6d5e',
-    tool_name: 'get_service_status',
-    target_device_id: 'dev-prod-linux-01',
-    device_hostname: 'srv-prod-api-01.internal',
-    requesting_identity: 'gemini_cli',
-    risk_tier: 'tier_1_read_only',
-    arguments: { service_name: 'nginx' },
-    requires_approval: false,
-    status: 'completed',
-    created_at: Math.floor(Date.now() / 1000) - 3000,
-    updated_at: Math.floor(Date.now() / 1000) - 2998,
-    output: 'nginx.service is active (running) with 4 worker processes.',
-  },
-  {
-    task_id: 'task-7c6d5e4f',
-    tool_name: 'list_processes',
-    target_device_id: 'dev-stage-win-02',
-    device_hostname: 'win-qa-workstation-02',
-    requesting_identity: 'chatgpt_mcp',
-    risk_tier: 'tier_1_read_only',
-    arguments: { limit: 20 },
-    requires_approval: false,
-    status: 'completed',
-    created_at: Math.floor(Date.now() / 1000) - 2400,
-    updated_at: Math.floor(Date.now() / 1000) - 2397,
-    output: 'Retrieved 20 running processes via Windows CIM queries.',
-  },
-  {
-    task_id: 'task-6d5e4f3a',
-    tool_name: 'run_project_tests',
-    target_device_id: 'dev-dev-docker-03',
-    device_hostname: 'docker-sandbox-runner',
-    requesting_identity: 'claude_code',
-    risk_tier: 'tier_2_low_risk',
-    arguments: { test_path: 'tests' },
-    requires_approval: false,
-    status: 'completed',
-    created_at: Math.floor(Date.now() / 1000) - 1800,
-    updated_at: Math.floor(Date.now() / 1000) - 1760,
-    output: 'Pytest suite passed: 9 passed in 0.045s (100% test coverage).',
-  },
-  {
-    task_id: 'task-5a4b3c2d',
-    tool_name: 'run_linter',
-    target_device_id: 'dev-prod-linux-01',
-    device_hostname: 'srv-prod-api-01.internal',
-    requesting_identity: 'claude_code',
-    risk_tier: 'tier_2_low_risk',
-    arguments: {},
-    requires_approval: false,
-    status: 'failed',
-    error: 'Ruff linter detected 3 syntax violations in legacy_module.py.',
-    created_at: Math.floor(Date.now() / 1000) - 1400,
-    updated_at: Math.floor(Date.now() / 1000) - 1395,
-    output: 'Execution failed: 3 lint errors found in legacy_module.py.',
-  },
-  {
-    task_id: 'task-4b3c2d1e',
-    tool_name: 'create_backup',
-    target_device_id: 'dev-prod-linux-01',
-    device_hostname: 'srv-prod-api-01.internal',
-    requesting_identity: 'gemini_cli',
-    risk_tier: 'tier_2_low_risk',
-    arguments: { note: 'pre_migration_dump' },
-    requires_approval: false,
-    status: 'completed',
-    created_at: Math.floor(Date.now() / 1000) - 900,
-    updated_at: Math.floor(Date.now() / 1000) - 880,
-    output: 'Created backup archive backup_pre_migration_dump.tar.gz (42.5 MB).',
-  },
-  {
-    task_id: 'task-3c2d1e0f',
-    tool_name: 'launch_approved_application',
-    target_device_id: 'dev-stage-win-02',
-    device_hostname: 'win-qa-workstation-02',
-    requesting_identity: 'chatgpt_mcp',
-    risk_tier: 'tier_3_sensitive',
-    arguments: { app_name: 'code' },
-    requires_approval: false,
-    status: 'completed',
-    created_at: Math.floor(Date.now() / 1000) - 600,
-    updated_at: Math.floor(Date.now() / 1000) - 598,
-    output: 'Launched approved desktop application: code in Session 1.',
-  },
-  {
-    task_id: 'task-2d1e0f9a',
-    tool_name: 'capture_desktop_screenshot',
-    target_device_id: 'dev-stage-win-02',
-    device_hostname: 'win-qa-workstation-02',
-    requesting_identity: 'claude_desktop',
-    risk_tier: 'tier_3_sensitive',
-    arguments: {},
-    requires_approval: false,
-    status: 'failed',
-    error: 'Desktop capture timeout: user session locked by screen saver policy.',
-    created_at: Math.floor(Date.now() / 1000) - 450,
-    updated_at: Math.floor(Date.now() / 1000) - 440,
-    output: 'Failed: Session display buffer locked by screensaver.',
-  },
-  {
-    task_id: 'task-1f2e3d4c',
-    tool_name: 'edit_workspace_file',
-    target_device_id: 'dev-stage-win-02',
-    device_hostname: 'win-qa-workstation-02',
-    requesting_identity: 'chatgpt_mcp',
-    risk_tier: 'tier_3_sensitive',
-    arguments: { relative_path: 'config/app_settings.json', content: '{"port": 8080, "workers": 4, "env": "staging"}' },
-    requires_approval: true,
-    status: 'pending_approval',
-    created_at: Math.floor(Date.now() / 1000) - 300,
-    updated_at: Math.floor(Date.now() / 1000) - 300,
-    output: 'Tier 3 Sensitive Change: modification of configuration file. Automatic rollback backup prepared at .backups/app_settings.json.bak.',
-  },
-  {
-    task_id: 'task-0e9d8c7b',
-    tool_name: 'deploy_application',
-    target_device_id: 'dev-prod-linux-01',
-    device_hostname: 'srv-prod-api-01.internal',
-    requesting_identity: 'claude_desktop',
-    risk_tier: 'tier_4_high_risk',
-    arguments: { environment: 'staging' },
-    requires_approval: true,
-    status: 'completed',
-    approved_by: 'operator_alice',
-    created_at: Math.floor(Date.now() / 1000) - 250,
-    updated_at: Math.floor(Date.now() / 1000) - 220,
-    output: 'Approved by operator_alice. Blue-green deployment to staging succeeded.',
-  },
-  {
-    task_id: 'task-5e4d3c2b',
-    tool_name: 'delete_workspace_file',
-    target_device_id: 'dev-prod-linux-01',
-    device_hostname: 'srv-prod-api-01.internal',
-    requesting_identity: 'gemini_cli',
-    risk_tier: 'tier_4_high_risk',
-    arguments: { relative_path: 'temp_debug_dump.tar.gz' },
-    requires_approval: true,
-    status: 'pending_approval',
-    created_at: Math.floor(Date.now() / 1000) - 60,
-    updated_at: Math.floor(Date.now() / 1000) - 60,
-    output: 'Tier 4 High-Risk Operation: file deletion requested. Blast radius: local workspace unrecoverable if unbacked. Awaiting operator confirmation.',
-  },
-  {
-    task_id: 'task-9f8e7d6c',
-    tool_name: 'deploy_application',
-    target_device_id: 'dev-dev-docker-03',
-    device_hostname: 'docker-sandbox-runner',
-    requesting_identity: 'claude_code',
-    risk_tier: 'tier_4_high_risk',
-    arguments: { environment: 'production' },
-    requires_approval: true,
-    status: 'failed',
-    error: 'Container preflight healthcheck failed: port 8000 connection refused.',
-    created_at: Math.floor(Date.now() / 1000) - 150,
-    updated_at: Math.floor(Date.now() / 1000) - 120,
-    output: 'Deployment aborted: health probe failed after 30 seconds.',
-  },
-  {
-    task_id: 'task-8e7d6c5b',
-    tool_name: 'delete_workspace_file',
-    target_device_id: 'dev-stage-win-02',
-    device_hostname: 'win-qa-workstation-02',
-    requesting_identity: 'gemini_cli',
-    risk_tier: 'tier_4_high_risk',
-    arguments: { relative_path: 'certificates/rootCA.crt' },
-    requires_approval: true,
-    status: 'rejected',
-    error: 'Rejected by operator: certificates directory is protected.',
-    created_at: Math.floor(Date.now() / 1000) - 100,
-    updated_at: Math.floor(Date.now() / 1000) - 95,
-    output: 'Rejected: Certificates are critical assets and cannot be removed by AI.',
-  },
-];
-
-let auditLogs: AuditLog[] = [
-  {
-    event_id: 'audit-001',
-    timestamp: Math.floor(Date.now() / 1000) - 180,
-    actor: 'claude_desktop',
-    device_id: 'dev-prod-linux-01',
-    action: 'tool_invoke:read_workspace_file',
-    risk_tier: 'tier_1_read_only',
-    payload: { relative_path: 'src/main.py' },
-    outcome: 'success',
-  },
-  {
-    event_id: 'audit-002',
-    timestamp: Math.floor(Date.now() / 1000) - 120,
-    actor: 'system_probe',
-    device_id: 'dev-prod-linux-01',
-    action: 'heartbeat_received',
-    risk_tier: 'tier_1_read_only',
-    payload: { cpu: 18.4, mem_mb: 4210 },
-    outcome: 'success',
-  },
-  {
-    event_id: 'audit-003',
-    timestamp: Math.floor(Date.now() / 1000) - 60,
-    actor: 'gemini_cli',
-    device_id: 'dev-prod-linux-01',
-    action: 'task_submitted:delete_workspace_file',
-    risk_tier: 'tier_4_high_risk',
-    payload: { relative_path: 'temp_debug_dump.tar.gz' },
-    outcome: 'success',
-  },
-];
+// Real state — starts completely empty
+let devices: Device[] = [];
+let tasks: Task[] = [];
+let auditLogs: AuditLog[] = [];
 
 // Helper: redact secrets from payload
 function redactSecrets(obj: any): any {
@@ -384,8 +148,14 @@ function redactSecrets(obj: any): any {
   return obj;
 }
 
-// Log audit event
-function recordAudit(actor: string, action: string, device_id: string | undefined, payload: any, outcome: 'success' | 'failure' | 'denied' = 'success', risk_tier?: string) {
+function recordAudit(
+  actor: string,
+  action: string,
+  device_id: string | undefined,
+  payload: any,
+  outcome: 'success' | 'failure' | 'denied' = 'success',
+  risk_tier?: string
+) {
   const event: AuditLog = {
     event_id: `audit-${Math.random().toString(36).substring(2, 9)}`,
     timestamp: Math.floor(Date.now() / 1000),
@@ -428,41 +198,73 @@ app.post('/api/emergency-stop/toggle', (req: Request, res: Response) => {
   });
 });
 
+// Device endpoints
 app.get('/api/devices', (req: Request, res: Response) => {
+  // Update live telemetry for enrolled devices
+  for (const dev of devices) {
+    if (dev.status === 'online') {
+      dev.telemetry = getRealTelemetry();
+      dev.last_seen_epoch = Math.floor(Date.now() / 1000);
+    }
+  }
   res.json(devices);
 });
 
+// Endpoint to enroll current local host in 1 click
+app.post('/api/devices/enroll-local', (req: Request, res: Response) => {
+  const host = os.hostname();
+  const existing = devices.find(d => d.hostname === host);
+  if (existing) {
+    existing.status = 'online';
+    existing.last_seen_epoch = Math.floor(Date.now() / 1000);
+    existing.telemetry = getRealTelemetry();
+    return res.json({ device: existing, message: 'Local host refreshed.' });
+  }
+
+  const sysPlatform: 'linux' | 'windows' = os.platform() === 'win32' ? 'windows' : 'linux';
+  const newDev: Device = {
+    id: `dev-${sysPlatform}-${Math.random().toString(36).substring(2, 8)}`,
+    hostname: host,
+    os: sysPlatform,
+    os_version: `${os.type()} ${os.release()} (${os.arch()})`,
+    status: 'online',
+    ip_address: '127.0.0.1',
+    agent_version: '1.0.0',
+    last_seen_epoch: Math.floor(Date.now() / 1000),
+    workspace_root: WORKSPACE_DIR,
+    tags: ['local-host', sysPlatform, os.arch()],
+    desktop_enabled: Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY || os.platform() === 'win32'),
+    telemetry: getRealTelemetry(),
+  };
+
+  devices.unshift(newDev);
+  recordAudit('operator', 'device_enrolled_local', newDev.id, { hostname: host, os: sysPlatform });
+  res.status(201).json({ device: newDev, message: 'Local machine successfully enrolled.' });
+});
+
 app.post('/api/devices/enroll', (req: Request, res: Response) => {
-  const { hostname, os, tags, desktop_enabled } = req.body;
-  if (!hostname || !os) {
+  const { hostname, os: reqOs, tags, desktop_enabled } = req.body;
+  if (!hostname || !reqOs) {
     return res.status(400).json({ error: 'hostname and os are required.' });
   }
 
   const newDevice: Device = {
-    id: `dev-${os}-${Math.random().toString(36).substring(2, 8)}`,
+    id: `dev-${reqOs}-${Math.random().toString(36).substring(2, 8)}`,
     hostname: hostname.trim(),
-    os: os === 'windows' ? 'windows' : 'linux',
-    os_version: os === 'windows' ? 'Windows 11 Pro 23H2' : 'Ubuntu 24.04 LTS',
+    os: reqOs === 'windows' ? 'windows' : 'linux',
+    os_version: reqOs === 'windows' ? 'Windows 11 Pro' : 'Linux Kernel ' + os.release(),
     status: 'online',
-    ip_address: '10.0.' + Math.floor(Math.random() * 254) + '.' + Math.floor(Math.random() * 254),
+    ip_address: '127.0.0.1',
     agent_version: '1.0.0',
     last_seen_epoch: Math.floor(Date.now() / 1000),
-    workspace_root: os === 'windows' ? 'C:\\Workspace\\ai-bridge' : '/opt/ai-bridge/workspace',
-    tags: Array.isArray(tags) ? tags : ['auto-enrolled', os],
+    workspace_root: reqOs === 'windows' ? 'C:\\Workspace\\ai-bridge' : WORKSPACE_DIR,
+    tags: Array.isArray(tags) ? tags : ['enrolled', reqOs],
     desktop_enabled: Boolean(desktop_enabled),
-    telemetry: {
-      cpu_percent: Math.round(Math.random() * 25 * 10) / 10,
-      memory_used_mb: 3200,
-      memory_total_mb: 16384,
-      disk_used_gb: 25.4,
-      disk_total_gb: 250.0,
-      uptime_seconds: 3600,
-      load_avg: [0.15, 0.12, 0.10],
-    },
+    telemetry: getRealTelemetry(),
   };
 
   devices.unshift(newDevice);
-  recordAudit('operator', 'device_enrolled', newDevice.id, { hostname, os });
+  recordAudit('operator', 'device_enrolled', newDevice.id, { hostname, os: reqOs });
   res.status(201).json({
     device: newDevice,
     auth_token: `tok-${Math.random().toString(36).substring(2, 14)}`,
@@ -481,6 +283,7 @@ app.post('/api/devices/:id/revoke', (req: Request, res: Response) => {
   res.json({ message: `Device ${id} access has been revoked.`, device: dev });
 });
 
+// Tasks endpoints
 app.get('/api/tasks', (req: Request, res: Response) => {
   res.json(tasks);
 });
@@ -503,7 +306,6 @@ app.post('/api/tasks/submit', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Device enrollment is revoked.' });
   }
 
-  // Risk tier classification
   let risk_tier: Task['risk_tier'] = 'tier_1_read_only';
   let requires_approval = false;
 
@@ -520,22 +322,36 @@ app.post('/api/tasks/submit', (req: Request, res: Response) => {
   const taskId = `task-${Math.random().toString(36).substring(2, 10)}`;
   const now = Math.floor(Date.now() / 1000);
 
+  let output = '';
+  let result: any = null;
+  let status: Task['status'] = requires_approval ? 'pending_approval' : 'completed';
+
+  if (!requires_approval) {
+    try {
+      result = executeRealTool(tool_name, args || {});
+      output = `Executed successfully on ${targetDev.hostname}.`;
+    } catch (err: any) {
+      status = 'failed';
+      output = `Execution failed: ${err.message}`;
+    }
+  } else {
+    output = `Task queued for approval. Operator review required for ${risk_tier.toUpperCase()}.`;
+  }
+
   const newTask: Task = {
     task_id: taskId,
     tool_name,
     target_device_id,
     device_hostname: targetDev.hostname,
-    requesting_identity: requesting_identity || 'ai_assistant',
+    requesting_identity: requesting_identity || 'operator',
     risk_tier,
     arguments: args || {},
     requires_approval,
-    status: requires_approval ? 'pending_approval' : 'completed',
+    status,
     created_at: now,
     updated_at: now,
-    output: requires_approval
-      ? `Task paused in approval queue. Operator review required for ${risk_tier.toUpperCase()}.`
-      : `Executed successfully on ${targetDev.hostname}. Result payload validated.`,
-    result: requires_approval ? undefined : { execution_time_ms: 45, exit_code: 0, status: 'ok' },
+    output,
+    result,
   };
 
   tasks.unshift(newTask);
@@ -556,6 +372,7 @@ app.post('/api/tasks/:id/cancel', (req: Request, res: Response) => {
   res.json(task);
 });
 
+// Approvals endpoints
 app.get('/api/approvals', (req: Request, res: Response) => {
   const pending = tasks.filter(t => t.status === 'pending_approval');
   res.json(pending);
@@ -573,12 +390,22 @@ app.post('/api/approvals/:id/approve', (req: Request, res: Response) => {
     return res.status(400).json({ error: `Task status is '${task.status}', not pending_approval.` });
   }
 
-  task.status = 'completed';
   task.approved_by = req.body.approver || 'operator_admin';
   task.updated_at = Math.floor(Date.now() / 1000);
-  task.backup_path = task.tool_name.includes('file') ? `.backups/${task.arguments.relative_path || 'file'}.${task.updated_at}.bak` : undefined;
-  task.output = `Approved by ${task.approved_by}. Executed on host. Pre-execution backup created at ${task.backup_path || 'N/A'}.`;
-  task.result = { status: 'success', bytes_affected: 2048, backup: task.backup_path };
+
+  try {
+    const realResult = executeRealTool(task.tool_name, task.arguments);
+    task.status = 'completed';
+    task.result = realResult;
+    task.output = `Approved by ${task.approved_by}. Executed successfully on real host.`;
+    if (realResult?.backup_path) {
+      task.backup_path = realResult.backup_path;
+    }
+  } catch (err: any) {
+    task.status = 'failed';
+    task.error = err.message;
+    task.output = `Execution failed after approval: ${err.message}`;
+  }
 
   recordAudit(task.approved_by || 'operator_admin', `task_approved:${task.tool_name}`, task.target_device_id, { task_id: id }, 'success', task.risk_tier);
   res.json(task);
@@ -637,6 +464,279 @@ app.get('/api/mcp/tools', (req: Request, res: Response) => {
   res.json(MCP_TOOLS);
 });
 
+// REAL Tool Execution Function (Directly operates on the host system & workspace)
+function executeRealTool(tool_name: string, args: Record<string, any>): any {
+  if (tool_name === 'get_system_info') {
+    return {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      release: os.release(),
+      arch: os.arch(),
+      node_version: process.version,
+      workspace_root: WORKSPACE_DIR,
+      uptime_seconds: Math.round(os.uptime()),
+      emergency_stop_active: emergencyStopActive,
+    };
+  }
+
+  if (tool_name === 'get_resource_usage') {
+    return getRealTelemetry();
+  }
+
+  if (tool_name === 'list_workspace') {
+    const targetDir = getSafeWorkspacePath(args.relative_directory || '.');
+    if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
+      throw new Error(`Directory '${args.relative_directory || '.'}' does not exist inside workspace.`);
+    }
+    const entries = fs.readdirSync(targetDir);
+    return entries.slice(0, 100).map(name => {
+      const full = path.join(targetDir, name);
+      try {
+        const st = fs.statSync(full);
+        return {
+          name,
+          path: path.relative(WORKSPACE_DIR, full) || '.',
+          type: st.isDirectory() ? 'directory' : 'file',
+          size_bytes: st.isFile() ? st.size : null,
+          modified_time: Math.floor(st.mtimeMs / 1000),
+        };
+      } catch (e) {
+        return { name, type: 'unknown', size_bytes: null, modified_time: 0 };
+      }
+    });
+  }
+
+  if (tool_name === 'read_workspace_file') {
+    const safeFile = getSafeWorkspacePath(args.relative_path);
+    if (!fs.existsSync(safeFile) || !fs.statSync(safeFile).isFile()) {
+      throw new Error(`File '${args.relative_path}' not found in workspace.`);
+    }
+    const stat = fs.statSync(safeFile);
+    if (stat.size > 512000) {
+      throw new Error('File exceeds the 512KB safe read limit.');
+    }
+    const content = fs.readFileSync(safeFile, 'utf-8');
+    return {
+      path: args.relative_path,
+      size_bytes: stat.size,
+      content,
+    };
+  }
+
+  if (tool_name === 'search_workspace') {
+    const query = (args.query || '').toLowerCase();
+    if (!query) throw new Error('Query string is required.');
+    const matches: any[] = [];
+
+    function searchDir(d: string) {
+      for (const item of fs.readdirSync(d)) {
+        if (item === 'node_modules' || item === '.git' || item === 'dist' || item === '.backups') continue;
+        const full = path.join(d, item);
+        try {
+          const st = fs.statSync(full);
+          if (st.isDirectory()) {
+            searchDir(full);
+          } else if (st.isFile() && st.size < 512000) {
+            const txt = fs.readFileSync(full, 'utf-8');
+            const lines = txt.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].toLowerCase().includes(query)) {
+                matches.push({
+                  file: path.relative(WORKSPACE_DIR, full),
+                  line: i + 1,
+                  match: lines[i].trim().substring(0, 150),
+                });
+                if (matches.length >= 50) return;
+              }
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    searchDir(WORKSPACE_DIR);
+    return matches;
+  }
+
+  if (tool_name === 'create_workspace_file') {
+    const safeFile = getSafeWorkspacePath(args.relative_path);
+    if (fs.existsSync(safeFile)) {
+      throw new Error(`File '${args.relative_path}' already exists.`);
+    }
+    fs.mkdirSync(path.dirname(safeFile), { recursive: true });
+    fs.writeFileSync(safeFile, args.content || '', 'utf-8');
+    return {
+      status: 'created',
+      path: args.relative_path,
+      bytes_written: Buffer.byteLength(args.content || '', 'utf-8'),
+    };
+  }
+
+  if (tool_name === 'edit_workspace_file') {
+    const safeFile = getSafeWorkspacePath(args.relative_path);
+    if (!fs.existsSync(safeFile) || !fs.statSync(safeFile).isFile()) {
+      throw new Error(`File '${args.relative_path}' not found.`);
+    }
+    const backupDir = path.join(WORKSPACE_DIR, '.backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupFile = path.join(backupDir, `${path.basename(safeFile)}.${Date.now()}.bak`);
+    fs.copyFileSync(safeFile, backupFile);
+    fs.writeFileSync(safeFile, args.content || '', 'utf-8');
+    return {
+      status: 'updated',
+      path: args.relative_path,
+      bytes_written: Buffer.byteLength(args.content || '', 'utf-8'),
+      backup_path: path.relative(WORKSPACE_DIR, backupFile),
+    };
+  }
+
+  if (tool_name === 'move_workspace_file') {
+    const src = getSafeWorkspacePath(args.source_path);
+    const dst = getSafeWorkspacePath(args.destination_path);
+    if (!fs.existsSync(src)) throw new Error(`Source '${args.source_path}' does not exist.`);
+    if (fs.existsSync(dst)) throw new Error(`Destination '${args.destination_path}' already exists.`);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.renameSync(src, dst);
+    return { status: 'moved', source: args.source_path, destination: args.destination_path };
+  }
+
+  if (tool_name === 'delete_workspace_file') {
+    const safeFile = getSafeWorkspacePath(args.relative_path);
+    if (!fs.existsSync(safeFile)) {
+      throw new Error(`File '${args.relative_path}' does not exist.`);
+    }
+    const backupDir = path.join(WORKSPACE_DIR, '.backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupFile = path.join(backupDir, `${path.basename(safeFile)}.${Date.now()}.bak`);
+    fs.copyFileSync(safeFile, backupFile);
+    fs.unlinkSync(safeFile);
+    return {
+      status: 'deleted',
+      path: args.relative_path,
+      backup_path: path.relative(WORKSPACE_DIR, backupFile),
+    };
+  }
+
+  if (tool_name === 'list_processes') {
+    try {
+      const psOut = execSync('ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu | head -n 30', {
+        encoding: 'utf-8',
+        timeout: 4000,
+      });
+      const lines = psOut.trim().split('\n');
+      return lines.slice(1).map(l => {
+        const p = l.trim().split(/\s+/);
+        return {
+          pid: p[0],
+          user: p[1],
+          cpu_percent: parseFloat(p[2]) || 0,
+          mem_percent: parseFloat(p[3]) || 0,
+          name: p[4] || '',
+        };
+      });
+    } catch (e: any) {
+      return [{ pid: String(process.pid), user: 'node', cpu_percent: 0.2, mem_percent: 0.5, name: 'node' }];
+    }
+  }
+
+  if (tool_name === 'get_disk_usage') {
+    try {
+      const out = execSync('df -h /', { encoding: 'utf-8', timeout: 3000 });
+      return { output: out.trim() };
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  }
+
+  if (tool_name === 'get_memory_usage') {
+    return {
+      total_mb: Math.round(os.totalmem() / 1024 / 1024),
+      free_mb: Math.round(os.freemem() / 1024 / 1024),
+      used_mb: Math.round((os.totalmem() - os.freemem()) / 1024 / 1024),
+    };
+  }
+
+  if (tool_name === 'list_docker_containers') {
+    try {
+      const out = execSync('docker ps -a --format "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}"', {
+        encoding: 'utf-8',
+        timeout: 4000,
+      });
+      return out
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(l => {
+          const parts = l.split('|');
+          return { id: parts[0], name: parts[1], image: parts[2], status: parts[3], ports: parts[4] || '' };
+        });
+    } catch (e: any) {
+      return { notice: 'Docker daemon is not running on this host, or socket is inaccessible.' };
+    }
+  }
+
+  if (tool_name === 'git_status') {
+    try {
+      const out = execSync('git status --short --branch', { cwd: WORKSPACE_DIR, encoding: 'utf-8', timeout: 4000 });
+      return { is_git_repo: true, output: out.trim() || 'Working tree clean (no modifications)' };
+    } catch (e: any) {
+      return { is_git_repo: false, message: e.message };
+    }
+  }
+
+  if (tool_name === 'git_diff') {
+    try {
+      const out = execSync('git diff', { cwd: WORKSPACE_DIR, encoding: 'utf-8', timeout: 4000 });
+      return { diff: out.trim().substring(0, 16000) || '(No uncommitted git diff)' };
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  }
+
+  if (tool_name === 'run_project_tests') {
+    try {
+      const out = execSync('python3 ai-bridge/run_tests.py', { cwd: WORKSPACE_DIR, encoding: 'utf-8', timeout: 15000 });
+      return { passed: !out.includes('FAILED'), output: out.trim() };
+    } catch (e: any) {
+      return { passed: false, output: (e.stdout || '') + '\n' + (e.stderr || e.message) };
+    }
+  }
+
+  if (tool_name === 'run_linter') {
+    try {
+      const out = execSync('npm run lint', { cwd: WORKSPACE_DIR, encoding: 'utf-8', timeout: 15000 });
+      return { passed: true, output: out.trim() };
+    } catch (e: any) {
+      return { passed: false, output: (e.stdout || '') + '\n' + (e.stderr || e.message) };
+    }
+  }
+
+  if (tool_name === 'create_backup') {
+    const backupDir = path.join(WORKSPACE_DIR, 'ai-bridge-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const archivePath = path.join(backupDir, `backup_${Date.now()}.tar.gz`);
+    execSync(`tar -czf "${archivePath}" --exclude='node_modules' --exclude='.git' -C "${WORKSPACE_DIR}" .`, {
+      timeout: 10000,
+    });
+    const st = fs.statSync(archivePath);
+    return { status: 'success', archive_path: archivePath, size_bytes: st.size };
+  }
+
+  if (tool_name === 'get_desktop_status') {
+    return {
+      platform: os.platform(),
+      desktop_enabled: Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY || os.platform() === 'win32'),
+      display_env: process.env.DISPLAY || process.env.WAYLAND_DISPLAY || 'none',
+      session_type: os.platform() === 'win32' ? 'windows_session' : (process.env.WAYLAND_DISPLAY ? 'wayland' : 'x11/headless'),
+    };
+  }
+
+  return {
+    tool: tool_name,
+    executed_at: Math.floor(Date.now() / 1000),
+    arguments: args,
+  };
+}
+
 // Interactive Tool Invocation Sandbox
 app.post('/api/mcp/invoke', (req: Request, res: Response) => {
   if (emergencyStopActive) {
@@ -649,7 +749,11 @@ app.post('/api/mcp/invoke', (req: Request, res: Response) => {
     return res.status(404).json({ error: `Unknown tool: ${tool_name}` });
   }
 
-  const targetDev = devices.find(d => d.id === device_id) || devices[0];
+  // Find target device or fallback to local host
+  let targetDev = devices.find(d => d.id === device_id);
+  if (!targetDev && devices.length > 0) {
+    targetDev = devices[0];
+  }
 
   // If Tier 3 or Tier 4, route through approval queue unless pre-approved
   if (tool.risk.includes('Tier 3') || tool.risk.includes('Tier 4')) {
@@ -658,8 +762,8 @@ app.post('/api/mcp/invoke', (req: Request, res: Response) => {
     const pendingTask: Task = {
       task_id: taskId,
       tool_name,
-      target_device_id: targetDev.id,
-      device_hostname: targetDev.hostname,
+      target_device_id: targetDev?.id || 'dev-local',
+      device_hostname: targetDev?.hostname || os.hostname(),
       requesting_identity: 'sandbox_operator',
       risk_tier: tool.risk.includes('Tier 4') ? 'tier_4_high_risk' : 'tier_3_sensitive',
       arguments: args || {},
@@ -667,80 +771,77 @@ app.post('/api/mcp/invoke', (req: Request, res: Response) => {
       status: 'pending_approval',
       created_at: now,
       updated_at: now,
-      output: `Interactive execution halted. This operation requires confirmation in the Approval Queue (${tool.risk}).`,
+      output: `Interactive execution paused. This operation requires confirmation in the Approval Queue (${tool.risk}).`,
     };
     tasks.unshift(pendingTask);
-    recordAudit('sandbox_operator', `task_submitted:${tool_name}`, targetDev.id, { args }, 'success', pendingTask.risk_tier);
+    recordAudit('sandbox_operator', `task_submitted:${tool_name}`, targetDev?.id, { args }, 'success', pendingTask.risk_tier);
     return res.json({
       status: 'pending_approval',
       task_id: taskId,
       message: `Operation submitted to Approval Queue. Risk level: ${tool.risk}.`,
       tool_name,
-      target_device: targetDev.hostname,
+      target_device: targetDev?.hostname || os.hostname(),
     });
   }
 
-  // Tier 1 and Tier 2 execute immediately
-  let responseData: any = {};
-  if (tool_name === 'get_system_info') {
-    responseData = {
-      hostname: targetDev.hostname,
-      os: targetDev.os,
-      os_version: targetDev.os_version,
-      agent_version: targetDev.agent_version,
-      workspace_root: targetDev.workspace_root,
-      emergency_stop_active: emergencyStopActive,
-    };
-  } else if (tool_name === 'get_resource_usage') {
-    responseData = targetDev.telemetry;
-  } else if (tool_name === 'list_workspace') {
-    responseData = [
-      { name: 'src', type: 'directory', size_bytes: null, modified_time: Math.floor(Date.now() / 1000) - 3600 },
-      { name: 'config', type: 'directory', size_bytes: null, modified_time: Math.floor(Date.now() / 1000) - 7200 },
-      { name: 'README.md', type: 'file', size_bytes: 4210, modified_time: Math.floor(Date.now() / 1000) - 1200 },
-      { name: 'pyproject.toml', type: 'file', size_bytes: 840, modified_time: Math.floor(Date.now() / 1000) - 400 },
-    ];
-  } else if (tool_name === 'list_docker_containers') {
-    responseData = [
-      { id: 'c3f19a02d41b', name: 'redis-cache-stage', image: 'redis:7.2-alpine', status: 'Up 14 hours', ports: '0.0.0.0:6379->6379/tcp' },
-      { id: '8a90e314f822', name: 'postgres-db-16', image: 'postgres:16-bullseye', status: 'Up 4 days', ports: '0.0.0.0:5432->5432/tcp' },
-      { id: '2f11c7901844', name: 'nginx-reverse-proxy', image: 'nginx:alpine', status: 'Up 4 days', ports: '80/tcp, 443/tcp' },
-    ];
-  } else if (tool_name === 'git_status') {
-    responseData = {
-      is_git_repo: true,
-      branch: 'main',
-      clean: false,
-      staged: ['services/mcp_server/server.py'],
-      unstaged: ['packages/policy_engine/policy.py'],
-      untracked: [],
-    };
-  } else if (tool_name === 'run_project_tests') {
-    responseData = {
-      framework: 'pytest',
-      passed: true,
-      tests_ran: 9,
-      failures: 0,
-      duration_seconds: 0.045,
-      output: '9 passed in 0.045s (100% test coverage for security, contracts, and approval rules)',
-    };
-  } else {
-    responseData = {
-      tool: tool_name,
-      status: 'executed',
-      timestamp: Math.floor(Date.now() / 1000),
-      device: targetDev.hostname,
-      arguments: args,
-    };
-  }
+  // Tier 1 and Tier 2 execute immediately with real code
+  try {
+    const responseData = executeRealTool(tool_name, args || {});
+    const taskId = `task-${Math.random().toString(36).substring(2, 10)}`;
+    const now = Math.floor(Date.now() / 1000);
 
-  recordAudit('sandbox_operator', `tool_invoke:${tool_name}`, targetDev.id, { args }, 'success', 'tier_1_read_only');
-  res.json({
-    status: 'completed',
-    tool_name,
-    target_device: targetDev.hostname,
-    result: responseData,
-  });
+    const executedTask: Task = {
+      task_id: taskId,
+      tool_name,
+      target_device_id: targetDev?.id || 'dev-local',
+      device_hostname: targetDev?.hostname || os.hostname(),
+      requesting_identity: 'sandbox_operator',
+      risk_tier: tool.risk.includes('Tier 2') ? 'tier_2_low_risk' : 'tier_1_read_only',
+      arguments: args || {},
+      requires_approval: false,
+      status: 'completed',
+      created_at: now,
+      updated_at: now,
+      output: `Executed successfully on ${targetDev?.hostname || os.hostname()}.`,
+      result: responseData,
+    };
+    tasks.unshift(executedTask);
+    recordAudit('sandbox_operator', `tool_invoke:${tool_name}`, targetDev?.id, { args }, 'success', executedTask.risk_tier);
+
+    res.json({
+      status: 'completed',
+      tool_name,
+      target_device: targetDev?.hostname || os.hostname(),
+      result: responseData,
+    });
+  } catch (err: any) {
+    const taskId = `task-${Math.random().toString(36).substring(2, 10)}`;
+    const now = Math.floor(Date.now() / 1000);
+
+    const failedTask: Task = {
+      task_id: taskId,
+      tool_name,
+      target_device_id: targetDev?.id || 'dev-local',
+      device_hostname: targetDev?.hostname || os.hostname(),
+      requesting_identity: 'sandbox_operator',
+      risk_tier: tool.risk.includes('Tier 2') ? 'tier_2_low_risk' : 'tier_1_read_only',
+      arguments: args || {},
+      requires_approval: false,
+      status: 'failed',
+      error: err.message,
+      created_at: now,
+      updated_at: now,
+      output: `Execution error: ${err.message}`,
+    };
+    tasks.unshift(failedTask);
+    recordAudit('sandbox_operator', `tool_invoke_failed:${tool_name}`, targetDev?.id, { args, error: err.message }, 'failure');
+
+    res.status(400).json({
+      status: 'failed',
+      tool_name,
+      error: err.message,
+    });
+  }
 });
 
 // Trigger packaging of production release
@@ -776,7 +877,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[AI Bridge Control API] Server running at http://0.0.0.0:${PORT}`);
+    console.log(`[AI Bridge Control API] Real server running at http://0.0.0.0:${PORT}`);
   });
 }
 

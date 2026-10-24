@@ -15,53 +15,8 @@ policy_engine = PolicyEngine()
 audit_logger = AuditLogger()
 orchestrator = TaskOrchestrator(policy_engine=policy_engine, audit_logger=audit_logger)
 
-# Seed sample registered fleet devices
-DEVICE_REGISTRY: List[Dict[str, Any]] = [
-    {
-        "id": "dev-prod-linux-01",
-        "hostname": "srv-prod-api-01.internal",
-        "os": "linux",
-        "os_version": "Ubuntu 24.04 LTS (Kernel 6.8.0-generic)",
-        "status": "online",
-        "ip_address": "10.0.4.12",
-        "agent_version": "1.0.0",
-        "last_seen_epoch": 1742080000,
-        "workspace_root": "/opt/ai-bridge/workspace",
-        "tags": ["production", "api", "linux"],
-        "desktop_enabled": False,
-        "telemetry": {
-            "cpu_percent": 14.2,
-            "memory_used_mb": 4210.0,
-            "memory_total_mb": 16384.0,
-            "disk_used_gb": 42.1,
-            "disk_total_gb": 200.0,
-            "uptime_seconds": 1284000,
-            "load_avg": [0.42, 0.38, 0.25],
-        },
-    },
-    {
-        "id": "dev-stage-win-02",
-        "hostname": "win-qa-workstation-02",
-        "os": "windows",
-        "os_version": "Windows 11 Pro 23H2 (Build 22631)",
-        "status": "online",
-        "ip_address": "10.0.8.44",
-        "agent_version": "1.0.0",
-        "last_seen_epoch": 1742080000,
-        "workspace_root": "C:\\Workspace\\ai-bridge",
-        "tags": ["staging", "windows", "desktop-automation"],
-        "desktop_enabled": True,
-        "telemetry": {
-            "cpu_percent": 22.8,
-            "memory_used_mb": 7820.0,
-            "memory_total_mb": 32768.0,
-            "disk_used_gb": 180.5,
-            "disk_total_gb": 512.0,
-            "uptime_seconds": 348200,
-            "load_avg": [0.22, 0.18, 0.15],
-        },
-    },
-]
+# Fleet device registry (starts empty for real production enrollment)
+DEVICE_REGISTRY: List[Dict[str, Any]] = []
 
 mcp = FastMCP("ai-bridge")
 
